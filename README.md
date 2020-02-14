@@ -27,6 +27,7 @@ Learn more about [3D Morphable Models](https://arxiv.org/abs/1909.01815)
 - the button neutralModel will remove the expression part of the model
 - the random illumination button will change the illumination to a random one
 - the button `load mooney RPS` will load rendering parameters from a .rps file with shape, color, expression, and mooney
+- the button 'write mooney RPS' will write the rendering parameters to a .rps file with shape, color, expression, and mooney
 - the button `write PLY` enables writing the current instance as a mesh in the ply file format without mooney parameters
 - the button `export PNG` enables writing the mooney version of the current instance as an image in the png file format
 - the button `export original PNG` enables writing the original current instance as an image in the png file format
