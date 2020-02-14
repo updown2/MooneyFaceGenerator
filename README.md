@@ -17,7 +17,7 @@ Learn more about [3D Morphable Models](https://arxiv.org/abs/1909.01815)
 
 ## Run (precompiled):
 - make sure to fulfil all requirements above
-- download `mooney-generator.jar` under [release](https://github.com/updown2/parametric-mooney-face-generator/release) and put it in the same folder as the data folder.
+- download `mooney-generator.jar` under [release](https://github.com/updown2/MooneyFaceGenerator/release) and put it in the same folder as the data folder.
 - run `java -Xmx2g -jar mooney-generator.jar`
 - select the model2019_fullHead.h5 file containing the full head Basel Face Model to start
 
