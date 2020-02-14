@@ -1,5 +1,4 @@
 /*
- * Copyright University of Basel, Graphics and Vision Research Group
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,34 +12,37 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
- package faces.apps
+package faces.apps
 
- import java.awt.Dimension
- import java.io.{File, IOException}
+import java.awt.Dimension
+import java.io.{File, IOException}
 
- import javax.swing._
- import javax.swing.event.{ChangeEvent, ChangeListener}
- import breeze.linalg.min
- import scalismo.faces.gui.{GUIBlock, GUIFrame, ImagePanel}
- import scalismo.faces.gui.GUIBlock._
- import scalismo.faces.parameters.RenderParameter
- import scalismo.faces.io.{MeshIO, MoMoIO, PixelImageIO, RenderParameterIO}
- import scalismo.faces.sampling.face.MoMoRenderer
- import scalismo.faces.color.RGB
- import scalismo.faces.image.PixelImage
- import scalismo.utils.Random
- import scalismo.faces.color.RGBA
- import scalismo.faces.momo.MoMo
+import javax.swing._
+import javax.swing.event.{ChangeEvent, ChangeListener}
+import breeze.linalg.{DenseMatrix, DenseVector, min}
+import scalismo.faces.gui.{GUIBlock, GUIFrame, ImagePanel}
+import scalismo.faces.gui.GUIBlock._
+import scalismo.faces.parameters.RenderParameter
+import scalismo.faces.io.{MeshIO, MoMoIO, PixelImageIO, RenderParameterIO}
+import scalismo.faces.sampling.face.MoMoRenderer
+import scalismo.faces.color.RGB
+import scalismo.faces.image.{AccessMode, PixelImage}
+import scalismo.utils.Random
+import scalismo.faces.color.RGBA
+import scalismo.faces.image.filter.IsotropicGaussianFilter
+import scalismo.faces.momo.MoMo
+import scalismo.statisticalmodel.MultivariateNormalDistribution
+import scalismo.faces.parameters.{RenderParameter, SphericalHarmonicsLight, ParametricRenderer}
 
- import scala.reflect.io.Path
- import scala.util.{Failure, Try}
+import scala.reflect.io.Path
+import scala.util.{Failure, Try}
 
-object ModelViewer extends App {
+object MooneyFaceGenerator extends App {
 
   final val DEFAULT_DIR = new File(".")
 
   val modelFile: Option[File] = getModelFile(args)
-  modelFile.map(SimpleModelViewer(_))
+  modelFile.map(MooneyFaceGeneratorGUI(_))
 
   private def getModelFile(args: Seq[String]): Option[File] = {
     if (args.nonEmpty) {
@@ -62,23 +64,24 @@ object ModelViewer extends App {
   }
 }
 
-case class SimpleModelViewer(
-  modelFile: File,
-  imageWidth: Int = 512,
-  imageHeight: Int = 512,
-  maximalSliderValue: Int = 2,
-  maximalShapeRank: Option[Int] = None,
-  maximalColorRank: Option[Int] = None,
-  maximalExpressionRank: Option[Int] = None
-) {
+case class MooneyFaceGeneratorGUI(
+                                   modelFile: File,
+                                   imageWidth: Int = 512,
+                                   imageHeight: Int = 512,
+                                   maximalSliderValue: Int = 2,
+                                   maximalShapeRank: Option[Int] = None,
+                                   maximalColorRank: Option[Int] = None,
+                                   maximalExpressionRank: Option[Int] = None
+                                 ) {
 
   scalismo.initialize()
   val seed = 1024L
   implicit val rnd: Random = Random(seed)
 
-
   val model: MoMo = MoMoIO.read(modelFile, "").get
   var showExpressionModel: Boolean = model.hasExpressions
+  var thr = 0.25
+  var blur = 3
 
   val shapeRank: Int = maximalShapeRank match {
     case Some(rank) => min(model.neutralModel.shape.rank, rank)
@@ -95,18 +98,57 @@ case class SimpleModelViewer(
     case _ => try{model.expressionModel.get.expression.rank} catch {case _: Exception => 0}
   }
 
-  var renderer: MoMoRenderer = MoMoRenderer(model, RGBA.BlackTransparent).cached(5)
+  // for illumination
+  val dir = "data/parameters"
+  val files = new File(dir).listFiles.filter(_.getName.endsWith(".rps")).toIndexedSeq
+  var allIllumination = files.map(f => {
+    val rps = RenderParameterIO.read(f).get
+    rps.environmentMap
+  })
 
-  val initDefault: RenderParameter = RenderParameter.defaultSquare.fitToImageSize(imageWidth, imageHeight)
+  var allIlluminationData = allIllumination.map(i => i.toBreezeVector)
+
+  val mnd = MultivariateNormalDistribution.estimateFromData(allIlluminationData)
+
+  val pcs: Seq[(DenseVector[Double], Double)] = mnd.principalComponents
+
+
+  // vector holding the coefficients
+  var coeffs = DenseVector.fill(pcs.length){0.0}
+  // scaling factor for sliders
+  val sigFactor: Int = 100
+  // the maximal sigma the sliders should reach
+  var maximalSigma: Int = 3
+
+  val mooneyRank: Int = 2
+
+  var renderer: MoMoRenderer = MoMoRenderer(model, RGBA.BlackTransparent).cached(5)
+  // a matrix containing all eigenvectors
+  val pcM = DenseMatrix(pcs.map(p => p._1).toArray:_*).t
+  // a vector containing all squareroots of the eigenvalues to scale the coefficients
+  val sqrtEV = DenseVector(pcs.map(p => Math.sqrt(p._2)):_*)
+
+  // Changed to my illumination
+  val rndIllumminationPath = files(rnd.scalaRandom.nextInt(files.length))
+
+  // Get illumination from coefficients and add illumination to set of renderParameters
+  def addIllumination(c : DenseVector[Double])  = {
+    val scaledC = c *:* sqrtEV
+    val sHcoeffs = mnd.mean + pcM * scaledC
+    val newIllumination = SphericalHarmonicsLight.fromBreezeVector(sHcoeffs)
+    init = init.copy(environmentMap = newIllumination)
+  }
+
+  val initDefault: RenderParameter = RenderParameter.defaultSquare.fitToImageSize(imageWidth,imageHeight)
   val init10: RenderParameter = initDefault.copy(
     momo = initDefault.momo.withNumberOfCoefficients(shapeRank, colorRank, expRank)
   )
   var init: RenderParameter = init10
+  addIllumination(coeffs)
 
   var changingSliders = false
 
   val sliderSteps = 1000
-  var maximalSigma: Int = maximalSliderValue
   var maximalSigmaSpinner: JSpinner = {
     val spinner = new JSpinner(new SpinnerNumberModel(maximalSigma,0,999,1))
     spinner.addChangeListener( new ChangeListener() {
@@ -116,6 +158,8 @@ case class SimpleModelViewer(
         setShapeSliders()
         setColorSliders()
         setExpSliders()
+        setIllSliders()
+        setMooneySliders((thr*100-25).toInt, blur*5-25)
       }
     })
     spinner.setToolTipText("maximal slider value")
@@ -133,7 +177,8 @@ case class SimpleModelViewer(
 
   val bg = PixelImage(imageWidth, imageHeight, (_, _) => RGBA.Black)
 
-  val imageWindow = ImagePanel(renderWithBG(init))
+  val imageWindow = ImagePanel(renderMooney(init))
+  val imageWindoworig = ImagePanel(renderRGB(init))
 
   //--- SHAPE -----
   val shapeSlider: IndexedSeq[JSlider] = for (n <- 0 until shapeRank) yield {
@@ -191,6 +236,148 @@ case class SimpleModelViewer(
     })
     changingSliders = false
   }
+  // Illumination
+  val illuminationSlider: IndexedSeq[JSlider] = for (n <- 0 until pcs.length) yield {
+    GUIBlock.slider(-maximalSigma * sigFactor, maximalSigma * sigFactor, 0, f => {
+      updateIll(n, f)
+      updateImage()
+    })
+  }
+
+  val illSliderView: JPanel = GUIBlock.shelf(illuminationSlider.zipWithIndex.map(s => GUIBlock.stack(s._1, new JLabel("" + s._2))): _*)
+  val illScrollPane = new JScrollPane(illSliderView)
+  val illScrollBar: JScrollBar = illScrollPane.createVerticalScrollBar()
+  illScrollPane.setSize(800, 300)
+  illScrollPane.setPreferredSize(new Dimension(800, 300))
+
+  val rndIllButton: JButton = GUIBlock.button("random", {
+    randomIllumination(); updateImage()
+  })
+  val resetIllButton: JButton = GUIBlock.button("reset", {
+    resetIllumination(); updateImage()
+  })
+  rndIllButton.setToolTipText("draw each illumination parameter at random from a standard normal distribution")
+  resetIllButton.setToolTipText("set all illumination parameters to zero")
+
+  def updateIll(n: Int, value: Int): Unit = {
+    coeffs(n) = value.toDouble / sigFactor
+    addIllumination(coeffs)
+  }
+
+  def setIllSliders() = {
+    changingSliders = true
+    (0 until pcs.length).foreach(i => {
+      illuminationSlider(i).setValue(Math.round(coeffs(i) * sigFactor).toInt)
+    })
+    changingSliders = false
+    addIllumination(coeffs)
+  }
+
+  def randomIllumination() = {
+    coeffs = DenseVector.fill(pcs.length){rnd.scalaRandom.nextGaussian}
+    setIllSliders()
+  }
+
+  def resetIllumination() = {
+    coeffs = DenseVector.fill(pcs.length){0.0}
+    setIllSliders()
+  }
+
+  //--- MOONEY -----
+  val mooneySlider: IndexedSeq[JSlider] = for (n <- 0 until mooneyRank) yield {
+    GUIBlock.slider(-25, 25, 0, f => {
+      updateMooney(n, f+25)
+      updateImage()
+    })
+  }
+
+  def name(x:Int): String = {
+    if (x == 0)
+      return "threshold"
+    else
+      return "blur"
+  }
+
+  def mooneyfy(imgIn: PixelImage[RGBA], thr:Double, blur:Int): PixelImage[RGBA]={
+    val img = imgIn.map(_.gray)
+    val filteredImage = img.withAccessMode(AccessMode.Repeat[Double]).filter(IsotropicGaussianFilter(35, 2*blur+1))
+
+    // binary search on the threshold needed to get the specified percent of white pixels
+    var a = 0.0
+    var b = 1.0
+    while (b-a > .001) {
+      val mid = (a+b)/2.0
+      // create a new image with mid as the threshold
+      val temp = filteredImage.map(p => {
+        if (p>mid)
+          RGBA(1.0)
+        else
+          RGBA(0.0)
+      })
+      // find the percent of white pixels
+      val x = scalismo.faces.image.PixelImageOperations.mean(temp)
+      // lower number = more black pixels
+      // update the bounds of binary search based on these values
+      if (x.r > thr) a = mid
+      else b = mid
+    }
+    val thresholded = filteredImage.map(p => {
+      if (p > a)
+        RGBA(1.0)
+      else
+        RGBA(0.0)
+    })
+
+    return thresholded
+  }
+
+
+  val mooneySliderView: JPanel = GUIBlock.shelf(mooneySlider.zipWithIndex.map(s => GUIBlock.stack(s._1, new JLabel(name(s._2)))): _*)
+  val mooneyScrollPane = new JScrollPane(mooneySliderView)
+  val mooneyScrollBar: JScrollBar = mooneyScrollPane.createVerticalScrollBar()
+  mooneyScrollPane.setSize(800, 300)
+  mooneyScrollPane.setPreferredSize(new Dimension(800, 300))
+
+  val rndMooneyButton: JButton = GUIBlock.button("random", {
+    randomMooney(); updateImage()
+  })
+  val resetMooneyButton: JButton = GUIBlock.button("reset", {
+    resetMooney(); updateImage()
+  })
+  rndMooneyButton.setToolTipText("draw each mooney parameter at random from a standard normal distribution")
+  resetMooneyButton.setToolTipText("set all mooney parameters to starting values")
+
+  def randomMooney(): Unit = {
+    val n = rnd.scalaRandom.nextInt(50)-25
+    val f = rnd.scalaRandom.nextInt(50)-25
+    setMooneySliders(n, f)
+    updateImage()
+
+  }
+
+  def resetMooney(): Unit = {
+    thr = 0.25
+    blur = 3
+    setMooneySliders(0, 0)
+  }
+
+  def setMooneySliders(n: Int, f: Int): Unit = {
+    changingSliders = true
+    mooneySlider(0).setValue(n)
+    mooneySlider(1).setValue(f)
+    changingSliders = false
+  }
+
+  def updateMooney(n: Int, value: Int): Unit = {
+    if (n == 0) {
+      thr = value/100.0
+      //System.out.println("thr: " + thr)
+    }
+    else {
+      blur = value/5
+    }
+  }
+
 
   //--- COLOR -----
   val colorSlider: IndexedSeq[JSlider] = for (n <- 0 until colorRank) yield {
@@ -213,6 +400,8 @@ case class SimpleModelViewer(
   val resetColorButton: JButton = GUIBlock.button("reset", {
     resetColor(); updateImage()
   })
+
+
   rndColorButton.setToolTipText("draw each color parameter at random from a standard normal distribution")
   resetColorButton.setToolTipText("set all color parameters to zero")
 
@@ -308,13 +497,15 @@ case class SimpleModelViewer(
     changingSliders = false
   }
 
-
   //--- ALL TOGETHER -----
   val randomButton: JButton = GUIBlock.button("random", {
-    randomShape(); randomColor(); randomExpression(); updateImage()
+    randomShape(); randomColor(); randomExpression(); randomIllumination(); updateImage()
   })
   val resetButton: JButton = GUIBlock.button("reset", {
-    resetShape(); resetColor(); resetExpression(); updateImage()
+    resetShape(); resetColor(); resetExpression(); resetMooney(); resetIllumination(); updateImage();
+  })
+  val randomIll: JButton = GUIBlock.button("random illumination", {
+    randomIllumination(); updateImage()
   })
 
   val toggleExpressionButton: JButton = GUIBlock.button("expressions off", {
@@ -336,6 +527,7 @@ case class SimpleModelViewer(
 
   randomButton.setToolTipText("draw each model parameter at random from a standard normal distribution")
   resetButton.setToolTipText("set all model parameters to zero")
+  randomIll.setToolTipText("random illumination")
   toggleExpressionButton.setToolTipText("toggle expression part of model on and off")
 
   //function to export the current shown face as a .ply file
@@ -374,7 +566,36 @@ case class SimpleModelViewer(
       JOptionPane.showConfirmDialog(null, s"Would you like to overwrite the existing file: $file?","Warning",dialogButton) == JOptionPane.YES_OPTION
     }
 
-    val img = renderer.renderImage(init)
+    val img2: PixelImage[RGBA] = renderer.renderImage(init) // change code here
+    val img = mooneyfy(img2, thr, blur)
+
+
+    val fc = new JFileChooser()
+    fc.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES)
+    fc.setDialogTitle("Select a folder to store the .png file and name it")
+    if (fc.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
+      var file = fc.getSelectedFile
+      if (file.isDirectory) file = new File(file,"instance.png")
+      if ( !file.getName.endsWith(".png")) file = new File( file+".png")
+      if (!file.exists() || askToOverwrite(file)) {
+        PixelImageIO.write(img, file)
+      } else {
+        Failure(new IOException(s"Something went wrong when writing to file the file $file."))
+      }
+    } else {
+      Failure(new Exception("User aborted save dialog."))
+    }
+  }
+
+  // function to export the original image as .png
+  def exportOriginalImage (): Try[Unit] ={
+
+    def askToOverwrite(file: File): Boolean = {
+      val dialogButton = JOptionPane.YES_NO_OPTION
+      JOptionPane.showConfirmDialog(null, s"Would you like to overwrite the existing file: $file?","Warning",dialogButton) == JOptionPane.YES_OPTION
+    }
+
+    val img: PixelImage[RGBA] = renderer.renderImage(init) // change code here
 
     val fc = new JFileChooser()
     fc.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES)
@@ -409,9 +630,14 @@ case class SimpleModelViewer(
   )
   exportImageButton.setToolTipText("export the current image as .png")
 
+  //exportOriginalImage button and its tooltip
+  val exportOriginalImageButton: JButton = GUIBlock.button("export original PNG",
+    {
+      exportOriginalImage()
+    }
+  )
+  exportOriginalImageButton.setToolTipText("export the original image as .png")
 
-  //loads parameters from file
-  //TODO: load other parameters than the momo shape, expr and color
 
   def askUserForRPSFile(dir: File): Option[File] = {
     val jFileChooser = new JFileChooser(dir)
@@ -429,23 +655,29 @@ case class SimpleModelViewer(
   }
 
   def updateModelParameters(params: RenderParameter): Unit = {
-    val newShape = resizeParameterSequence(params.momo.shape, shapeRank, 0)
-    val newColor = resizeParameterSequence(params.momo.color, colorRank, 0)
-    val newExpr = resizeParameterSequence(params.momo.expression, expRank, 0)
-    println("Loaded Parameters")
-
-    init = init.copy(momo = init.momo.copy(shape = newShape, color = newColor, expression = newExpr))
+    init = params
     setShapeSliders()
     setColorSliders()
     setExpSliders()
+    setIllSliders()
+    setMooneySliders((thr*100-25).toInt, blur*5-25)
     updateImage()
   }
 
-  val loadButton: JButton = GUIBlock.button(
-    "load RPS",
+  val loadMooneyButton: JButton = GUIBlock.button(
+    "load mooney RPS",
     {
       for {rpsFile <- askUserForRPSFile(new File("."))
            rpsParams <- RenderParameterIO.read(rpsFile)} {
+        var name:String = rpsFile.toString()
+        var use = name.split("_")
+
+        thr = use(1).split("=")(1).toDouble
+        blur = use(2).split("=")(1).toInt
+
+        //System.out.println("thr = " + thr + ", blur = " + blur)
+        //System.out.println("thr = " + use(1).split("=")(1) + ", blur = " + use(2).split("=")(1))
+
         val maxSigma = (rpsParams.momo.shape ++ rpsParams.momo.color ++ rpsParams.momo.expression).map(math.abs).max
         if ( maxSigma > maximalSigma ) {
           maximalSigma = math.ceil(maxSigma).toInt
@@ -453,8 +685,36 @@ case class SimpleModelViewer(
           setShapeSliders()
           setColorSliders()
           setExpSliders()
+          setIllSliders()
+          setMooneySliders((thr*100-25).toInt, blur*5-25)
         }
         updateModelParameters(rpsParams)
+      }
+    }
+  )
+
+  val writeMooneyButton: JButton = GUIBlock.button(
+    "write mooney RPS",
+    {
+      def askToOverwrite(file: File): Boolean = {
+        val dialogButton = JOptionPane.YES_NO_OPTION
+        JOptionPane.showConfirmDialog(null, s"Would you like to overwrite the existing file: $file?","Warning",dialogButton) == JOptionPane.YES_OPTION
+      }
+
+      val fc = new JFileChooser()
+      fc.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES)
+      fc.setDialogTitle("Select a folder to store the .rps file and name it. Don't use '_' in the name.")
+      if (fc.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
+        var file = fc.getSelectedFile
+        if (file.isDirectory) file = new File(file,"instance.rps")
+        file = new File( file+"_thr=" + thr + "_blur=" + blur + "_.rps")
+        if (!file.exists() || askToOverwrite(file)) {
+          RenderParameterIO.write(init, file)
+        } else {
+          Failure(new IOException(s"Something went wrong when writing to file the file $file."))
+        }
+      } else {
+        Failure(new Exception("User aborted save dialog."))
       }
     }
   )
@@ -462,11 +722,19 @@ case class SimpleModelViewer(
 
   //---- update the image
   def updateImage(): Unit = {
-    if (!changingSliders)
-      imageWindow.updateImage(renderWithBG(init))
+    if (!changingSliders) {
+      imageWindow.updateImage(renderMooney(init))
+      imageWindoworig.updateImage(renderRGB(init))
+    }
   }
 
-  def renderWithBG(init: RenderParameter): PixelImage[RGB] = {
+  def renderMooney(init: RenderParameter): PixelImage[RGB] = {
+    val fg2 = renderer.renderImage(init)
+    val fg = mooneyfy(fg2, thr, blur)
+    fg.zip(bg).map { case (f, b) => b.toRGB.blend(f) }
+  }
+
+  def renderRGB(init: RenderParameter): PixelImage[RGB] = {
     val fg = renderer.renderImage(init)
     fg.zip(bg).map { case (f, b) => b.toRGB.blend(f) }
     //    fg.map(_.toRGB)
@@ -478,6 +746,8 @@ case class SimpleModelViewer(
   controls.addTab("shape", GUIBlock.stack(shapeScrollPane, GUIBlock.shelf(rndShapeButton, resetShapeButton)))
   if ( model.hasExpressions)
     controls.addTab("expression", GUIBlock.stack(expScrollPane, GUIBlock.shelf(rndExpButton, resetExpButton)))
+  controls.addTab("mooney", GUIBlock.stack(mooneyScrollPane, GUIBlock.shelf(rndMooneyButton, resetMooneyButton)))
+  controls.addTab("illumination", GUIBlock.stack(illScrollPane, GUIBlock.shelf(rndIllButton, resetIllButton)))
   def addRemoveExpressionTab(): Unit = {
     if ( showExpressionModel ) {
       controls.addTab("expression", GUIBlock.stack(expScrollPane, GUIBlock.shelf(rndExpButton, resetExpButton)))
@@ -488,17 +758,16 @@ case class SimpleModelViewer(
   }
 
   val guiFrame: GUIFrame = GUIBlock.stack(
-    GUIBlock.shelf(imageWindow,
+    GUIBlock.shelf(GUIBlock.stack(imageWindoworig, imageWindow),
       GUIBlock.stack(controls,
         if (model.hasExpressions) {
-          GUIBlock.shelf(maximalSigmaSpinner, randomButton, resetButton, toggleExpressionButton, loadButton, exportShapeButton, exportImageButton)
+          GUIBlock.shelf(maximalSigmaSpinner, randomButton, randomIll, resetButton, toggleExpressionButton, loadMooneyButton, writeMooneyButton, exportShapeButton, exportImageButton, exportOriginalImageButton)
         } else {
-          GUIBlock.shelf(maximalSigmaSpinner, randomButton, resetButton, loadButton, exportShapeButton, exportImageButton)
+          GUIBlock.shelf(maximalSigmaSpinner, randomButton, randomIll, resetButton, loadMooneyButton, writeMooneyButton, exportShapeButton, exportImageButton, exportOriginalImageButton)
         }
       )
     )
-  ).displayIn("MoMo-Viewer")
-
+  ).displayIn("Parametric Mooney Face Generator")
 
 
   //--- ROTATION CONTROLS ------
@@ -538,6 +807,53 @@ case class SimpleModelViewer(
   imageWindow.addMouseMotionListener(new MouseMotionListener {
     override def mouseMoved(e: MouseEvent): Unit = {
       if (lookAt) {
+        val x = e.getX
+        val y = e.getY
+        val yawPose = math.Pi / 2 * (x - imageWidth * 0.5) / (imageWidth / 2)
+        val pitchPose = math.Pi / 2 * (y - imageHeight * 0.5) / (imageHeight / 2)
+
+        init = init.copy(pose = init.pose.copy(yaw = yawPose, pitch = pitchPose))
+        updateImage()
+      }
+    }
+
+    override def mouseDragged(e: MouseEvent): Unit = {}
+  })
+
+
+  var lookAtorig = false
+  imageWindoworig.requestFocusInWindow()
+
+  imageWindoworig.addKeyListener(new KeyListener {
+    override def keyTyped(e: KeyEvent): Unit = {
+    }
+
+    override def keyPressed(e: KeyEvent): Unit = {
+      if (e.getKeyCode == KeyEvent.VK_CONTROL) lookAtorig = true
+    }
+
+    override def keyReleased(e: KeyEvent): Unit = {
+      if (e.getKeyCode == KeyEvent.VK_CONTROL) lookAtorig = false
+    }
+  })
+
+  imageWindoworig.addMouseListener(new MouseListener {
+    override def mouseExited(e: MouseEvent): Unit = {}
+
+    override def mouseClicked(e: MouseEvent): Unit = {
+      imageWindoworig.requestFocusInWindow()
+    }
+
+    override def mouseEntered(e: MouseEvent): Unit = {}
+
+    override def mousePressed(e: MouseEvent): Unit = {}
+
+    override def mouseReleased(e: MouseEvent): Unit = {}
+  })
+
+  imageWindoworig.addMouseMotionListener(new MouseMotionListener {
+    override def mouseMoved(e: MouseEvent): Unit = {
+      if (lookAtorig) {
         val x = e.getX
         val y = e.getY
         val yawPose = math.Pi / 2 * (x - imageWidth * 0.5) / (imageWidth / 2)

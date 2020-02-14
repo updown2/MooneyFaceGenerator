@@ -4,3 +4,6 @@ project/target/
 target/
 *.class
 *.log
+data/
+face_im/
+outFace/
