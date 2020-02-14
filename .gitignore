@@ -5,5 +5,3 @@ target/
 *.class
 *.log
 data/*/
-face_im/
-outFace/
