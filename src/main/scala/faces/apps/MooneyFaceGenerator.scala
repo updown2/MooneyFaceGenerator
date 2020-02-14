@@ -32,7 +32,8 @@ import scalismo.faces.color.RGBA
 import scalismo.faces.image.filter.IsotropicGaussianFilter
 import scalismo.faces.momo.MoMo
 import scalismo.statisticalmodel.MultivariateNormalDistribution
-import scalismo.faces.parameters.{RenderParameter, SphericalHarmonicsLight, ParametricRenderer}
+import scalismo.faces.parameters.{ParametricRenderer, RenderParameter, SphericalHarmonicsLight}
+import scalismo.geometry.Vector3D
 
 import scala.reflect.io.Path
 import scala.util.{Failure, Try}
@@ -140,10 +141,10 @@ case class MooneyFaceGeneratorGUI(
   }
 
   val initDefault: RenderParameter = RenderParameter.defaultSquare.fitToImageSize(imageWidth,imageHeight)
-  val init10: RenderParameter = initDefault.copy(
-    momo = initDefault.momo.withNumberOfCoefficients(shapeRank, colorRank, expRank)
+  var init: RenderParameter = initDefault.copy(
+    momo = initDefault.momo.withNumberOfCoefficients(shapeRank, colorRank, expRank),
+    pose = initDefault.pose.copy(translation = Vector3D(0.0, 0.0, -1200.0))
   )
-  var init: RenderParameter = init10
   addIllumination(coeffs)
 
   var changingSliders = false
