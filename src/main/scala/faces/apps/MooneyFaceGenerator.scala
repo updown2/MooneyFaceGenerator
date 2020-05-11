@@ -19,7 +19,7 @@ import java.io.{File, IOException}
 
 import javax.swing._
 import javax.swing.event.{ChangeEvent, ChangeListener}
-import breeze.linalg.{DenseMatrix, DenseVector, min}
+import breeze.linalg.{DenseMatrix, DenseVector, inv, min}
 import scalismo.faces.gui.{GUIBlock, GUIFrame, ImagePanel}
 import scalismo.faces.gui.GUIBlock._
 import scalismo.faces.parameters.RenderParameter
@@ -81,7 +81,7 @@ case class MooneyFaceGeneratorGUI(
 
   val model: MoMo = MoMoIO.read(modelFile, "").get
   var showExpressionModel: Boolean = model.hasExpressions
-  var thr = 0.25
+  var thr = 0.5
   var blur = 3
 
   val shapeRank: Int = maximalShapeRank match {
@@ -108,10 +108,8 @@ case class MooneyFaceGeneratorGUI(
   })
 
   var allIlluminationData = allIllumination.map(i => i.toBreezeVector)
-
   val mnd = MultivariateNormalDistribution.estimateFromData(allIlluminationData)
-
-  val pcs: Seq[(DenseVector[Double], Double)] = mnd.principalComponents
+  val pcs = mnd.principalComponents
 
 
   // vector holding the coefficients
@@ -126,6 +124,7 @@ case class MooneyFaceGeneratorGUI(
   var renderer: MoMoRenderer = MoMoRenderer(model, RGBA.BlackTransparent).cached(5)
   // a matrix containing all eigenvectors
   val pcM = DenseMatrix(pcs.map(p => p._1).toArray:_*).t
+  val inverse_pcM=inv(pcM)
   // a vector containing all squareroots of the eigenvalues to scale the coefficients
   val sqrtEV = DenseVector(pcs.map(p => Math.sqrt(p._2)):_*)
 
@@ -134,10 +133,20 @@ case class MooneyFaceGeneratorGUI(
 
   // Get illumination from coefficients and add illumination to set of renderParameters
   def addIllumination(c : DenseVector[Double])  = {
-    val scaledC = c *:* sqrtEV
-    val sHcoeffs = mnd.mean + pcM * scaledC
+    //System.out.println("coeffs: " + c)
+    val scaledC: DenseVector[Double] = c *:* sqrtEV
+    //System.out.println("scaledC: " + scaledC)
+    val sHcoeffs: DenseVector[Double] = mnd.mean + pcM * scaledC
+    //System.out.println("sHcoeffs: " + sHcoeffs)
     val newIllumination = SphericalHarmonicsLight.fromBreezeVector(sHcoeffs)
+    //System.out.println("out: " + newIllumination)
     init = init.copy(environmentMap = newIllumination)
+  }
+
+  def backaddIllumination()  = {
+    val sHcoeffs = init.environmentMap.toBreezeVector
+    val scaledC = inverse_pcM*(sHcoeffs - mnd.mean)
+    coeffs = (1.0/sqrtEV) *:* scaledC
   }
 
   val initDefault: RenderParameter = RenderParameter.defaultSquare.fitToImageSize(imageWidth,imageHeight)
@@ -160,7 +169,7 @@ case class MooneyFaceGeneratorGUI(
         setColorSliders()
         setExpSliders()
         setIllSliders()
-        setMooneySliders((thr*100-25).toInt, blur*5-25)
+        setMooneySliders((thr*100-50).toInt, blur*5-25)
       }
     })
     spinner.setToolTipText("maximal slider value")
@@ -238,6 +247,7 @@ case class MooneyFaceGeneratorGUI(
     changingSliders = false
   }
   // Illumination
+
   val illuminationSlider: IndexedSeq[JSlider] = for (n <- 0 until pcs.length) yield {
     GUIBlock.slider(-maximalSigma * sigFactor, maximalSigma * sigFactor, 0, f => {
       updateIll(n, f)
@@ -286,8 +296,8 @@ case class MooneyFaceGeneratorGUI(
 
   //--- MOONEY -----
   val mooneySlider: IndexedSeq[JSlider] = for (n <- 0 until mooneyRank) yield {
-    GUIBlock.slider(-25, 25, 0, f => {
-      updateMooney(n, f+25)
+    GUIBlock.slider(-50, 50, 0, f => {
+      updateMooney(n, f+50)
       updateImage()
     })
   }
@@ -300,8 +310,20 @@ case class MooneyFaceGeneratorGUI(
   }
 
   def mooneyfy(imgIn: PixelImage[RGBA], thr:Double, blur:Int): PixelImage[RGBA]={
+    var cnt = 0;
+
+    val white = imgIn.map(p => {
+      if (p.a>.5)
+        RGBA(1.0)
+      else
+        RGBA(0.0)
+    })
+    val whitemean = scalismo.faces.image.PixelImageOperations.mean(white)
+
     val img = imgIn.map(_.gray)
     val filteredImage = img.withAccessMode(AccessMode.Repeat[Double]).filter(IsotropicGaussianFilter(35, 2*blur+1))
+
+
 
     // binary search on the threshold needed to get the specified percent of white pixels
     var a = 0.0
@@ -319,7 +341,7 @@ case class MooneyFaceGeneratorGUI(
       val x = scalismo.faces.image.PixelImageOperations.mean(temp)
       // lower number = more black pixels
       // update the bounds of binary search based on these values
-      if (x.r > thr) a = mid
+      if (x.r/whitemean.r > thr) a = mid
       else b = mid
     }
     val thresholded = filteredImage.map(p => {
@@ -357,7 +379,7 @@ case class MooneyFaceGeneratorGUI(
   }
 
   def resetMooney(): Unit = {
-    thr = 0.25
+    thr = 0.5
     blur = 3
     setMooneySliders(0, 0)
   }
@@ -559,7 +581,7 @@ case class MooneyFaceGeneratorGUI(
     }
   }
 
-  //function to export the current shown face as a .ply file
+  //function to export the current shown face as a .png file
   def exportImage (): Try[Unit] ={
 
     def askToOverwrite(file: File): Boolean = {
@@ -657,11 +679,12 @@ case class MooneyFaceGeneratorGUI(
 
   def updateModelParameters(params: RenderParameter): Unit = {
     init = params
+    backaddIllumination()
     setShapeSliders()
     setColorSliders()
     setExpSliders()
     setIllSliders()
-    setMooneySliders((thr*100-25).toInt, blur*5-25)
+    setMooneySliders((thr*100-50).toInt, blur*5-25)
     updateImage()
   }
 
@@ -676,9 +699,6 @@ case class MooneyFaceGeneratorGUI(
         thr = use(1).split("=")(1).toDouble
         blur = use(2).split("=")(1).toInt
 
-        //System.out.println("thr = " + thr + ", blur = " + blur)
-        //System.out.println("thr = " + use(1).split("=")(1) + ", blur = " + use(2).split("=")(1))
-
         val maxSigma = (rpsParams.momo.shape ++ rpsParams.momo.color ++ rpsParams.momo.expression).map(math.abs).max
         if ( maxSigma > maximalSigma ) {
           maximalSigma = math.ceil(maxSigma).toInt
@@ -687,9 +707,12 @@ case class MooneyFaceGeneratorGUI(
           setColorSliders()
           setExpSliders()
           setIllSliders()
-          setMooneySliders((thr*100-25).toInt, blur*5-25)
+          setMooneySliders((thr*100-50).toInt, blur*5-25)
         }
         updateModelParameters(rpsParams)
+        //System.out.println(init.momo)
+        //System.out.println(init.environmentMap)
+        //System.out.println(init.momo.expression)
       }
     }
   )
