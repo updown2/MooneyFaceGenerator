@@ -25,15 +25,15 @@ import scalismo.faces.gui.GUIBlock._
 import scalismo.faces.parameters.RenderParameter
 import scalismo.faces.io.{MeshIO, MoMoIO, PixelImageIO, RenderParameterIO}
 import scalismo.faces.sampling.face.MoMoRenderer
-import scalismo.faces.color.RGB
+import scalismo.color.RGB
 import scalismo.faces.image.{AccessMode, PixelImage}
 import scalismo.utils.Random
-import scalismo.faces.color.RGBA
+import scalismo.color.RGBA
 import scalismo.faces.image.filter.IsotropicGaussianFilter
 import scalismo.faces.momo.MoMo
 import scalismo.statisticalmodel.MultivariateNormalDistribution
 import scalismo.faces.parameters.{ParametricRenderer, RenderParameter, SphericalHarmonicsLight}
-import scalismo.geometry.Vector3D
+import scalismo.geometry.EuclideanVector3D
 
 import scala.reflect.io.Path
 import scala.util.{Failure, Try}
@@ -152,7 +152,7 @@ case class MooneyFaceGeneratorGUI(
   val initDefault: RenderParameter = RenderParameter.defaultSquare.fitToImageSize(imageWidth,imageHeight)
   var init: RenderParameter = initDefault.copy(
     momo = initDefault.momo.withNumberOfCoefficients(shapeRank, colorRank, expRank),
-    pose = initDefault.pose.copy(translation = Vector3D(0.0, 0.0, -1200.0))
+    pose = initDefault.pose.copy(translation = EuclideanVector3D(0.0, 0.0, -1200.0))
   )
   addIllumination(coeffs)
 
