@@ -11,7 +11,7 @@ Learn more about [3D Morphable Models](https://arxiv.org/abs/1909.01815)
 - installed [sbt](http://www.scala-sbt.org/release/tutorial/Setup.html) (only for compiling from sources)
 - generate a new folder for this project
 - download the [Basel Face Model 2019](https://faces.dmi.unibas.ch/bfm/bfm2019.html)
-- download the [Basel Illumination Prior 2017](https://gravis.dmi.unibas.ch/PMM/data/bip/)
+- download the [Basel Illumination Prior 2017](https://shapemodelling.cs.unibas.ch/gravis-site-archive/PMM/data/bip/index.html)
 - move the Basel Illumination Prior to the data directory of your generated folder. There should now be a parameters folder in the data directory.
 
 
